@@ -69,6 +69,7 @@ Item {
     actionProc.exitCode = -1
     actionProc.stdoutDone = false
     actionProc.stdoutText = ""
+    actionProc.command = []
     actionProc.command = [Vms.VIRSH_BINARY, "-c", Vms.VIRSH_URI, kind, String(name)]
     actionProc.running = true
     actionWatchdog.restart()
@@ -87,6 +88,28 @@ Item {
     root.status = "loading"
     root.error = ""
     preflightProc.running = true
+    preflightWatchdog.restart()
+  }
+
+  // Force a full refresh even if state appears stuck. Stops all watchdogs,
+  // resets busy/action flags, clears errors, and runs the complete refresh
+  // pipeline. Intended for manual recovery when the service is wedged.
+  function forceRefresh() {
+    listWatchdog.stop()
+    listStuckTimer.stop()
+    actionWatchdog.stop()
+    actionStuckTimer.stop()
+    viewerProbeWatchdog.stop()
+    viewerPreflightWatchdog.stop()
+    root.busy = false
+    root.actionKind = ""
+    root.actionVm = ""
+    root.actionError = ""
+    root.status = "loading"
+    root.error = ""
+    root.lastRefreshAt = 0
+    preflightProc.running = true
+    preflightWatchdog.restart()
   }
 
   // ------------------------------------------------------------ preflight
@@ -99,6 +122,7 @@ Item {
     command: ["/usr/bin/test", "-x", Vms.VIRSH_BINARY]
 
     onExited: function(code) {
+      preflightWatchdog.stop()
       if (code !== 0) {
         root.virshMissing = true
         root.busy = false
@@ -111,10 +135,21 @@ Item {
     }
   }
 
+  Timer {
+    id: preflightWatchdog
+    interval: 5000
+    repeat: false
+    onTriggered: preflightProc.running = false
+  }
+
   function startList() {
     listProc.exitCode = -1
     listProc.stdoutDone = false
     listProc.stdoutText = ""
+    // Clear then re-set command to force Quickshell to re-execute even when
+    // the virsh command string is identical to the previous run.
+    listProc.command = []
+    listProc.command = [Vms.VIRSH_BINARY, "-c", Vms.VIRSH_URI, "list", "--all"]
     listProc.running = true
     listWatchdog.restart()
   }
@@ -232,7 +267,8 @@ Item {
     onRunningChanged: {
       if (running) return
       if (!root.actionBusy) return
-      Qt.callLater(root.recoverStuckAction)
+      if (actionProc.exitCode !== -1) return
+      actionStuckTimer.restart()
     }
   }
 
@@ -241,6 +277,16 @@ Item {
     interval: Vms.ACTION_TIMEOUT_MS
     repeat: false
     onTriggered: actionProc.running = false
+  }
+
+  // Guards against the onRunningChanged / onExited ordering race: if the
+  // process exits right as onRunningChanged fires, Qt.callLater could run
+  // recoverStuckAction after finishAction already handled completion.
+  Timer {
+    id: actionStuckTimer
+    interval: 50
+    repeat: false
+    onTriggered: root.recoverStuckAction()
   }
 
   function recoverStuckAction() {
@@ -356,25 +402,6 @@ Item {
     viewerPreflight.command = ["/usr/bin/test", "-x", Vms.VIRT_VIEWER_BINARY]
     viewerPreflight.running = true
     viewerPreflightWatchdog.restart()
-  }
-
-  Process {
-    id: viewerPreflight
-    property string vm: ""
-    command: []
-
-    onExited: function(code) {
-      var name = viewerPreflight.vm
-      viewerPreflight.vm = ""
-      if (code !== 0 || name === "") return
-      viewerProc.command = [Vms.VIRT_VIEWER_BINARY, "-c", Vms.VIRSH_URI, name]
-      viewerProc.running = true
-    }
-  }
-
-  Process {
-    id: viewerProc
-    command: []
   }
 
   // ------------------------------------------------------------ scheduling

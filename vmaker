@@ -130,6 +130,8 @@ CORES="$(ask_int "Step 4: CPU cores" "$(( $(nproc) / 2 ))" 1 "$(nproc)")"
 TOTAL_GB="$(awk '/MemTotal/{printf "%.0f", $2/1024/1024}' /proc/meminfo)"
 DEF_RAM="$(( TOTAL_GB / 4 ))"
 [ "$DEF_RAM" -lt 2 ] && DEF_RAM=2
+[ "$DEF_RAM" -gt "$TOTAL_GB" ] && DEF_RAM="$TOTAL_GB"
+[ "$DEF_RAM" -lt 1 ] && DEF_RAM=1
 echo ""
 RAM_GB="$(ask_int "Step 5: RAM in GB" "$DEF_RAM" 1 "$TOTAL_GB")"
 RAM_MIB="$(( RAM_GB * 1024 ))"
@@ -176,8 +178,12 @@ fi
 if [ "$OS_TYPE" = "windows" ]; then
   if [ "$OS_VARIANT" = "win11" ] || [ "$OS_VARIANT" = "win2k25" ]; then
     # Windows 11 / Server 2025 want Secure Boot + TPM 2.0
+    OVMF_CODE="/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd"
+    OVMF_VARS="/usr/share/edk2/x64/OVMF_VARS.4m.fd"
+    [ -f "$OVMF_CODE" ] || err "OVMF secure boot code not found at $OVMF_CODE — install edk2-ovmf"
+    [ -f "$OVMF_VARS" ] || err "OVMF vars template not found at $OVMF_VARS — install edk2-ovmf"
     ARGS+=(--machine q35)
-    ARGS+=(--boot loader=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd,nvram.template=/usr/share/edk2/x64/OVMF_VARS.4m.fd)
+    ARGS+=(--boot loader="$OVMF_CODE,nvram.template=$OVMF_VARS")
     ARGS+=(--features smm.state=on)
     ARGS+=(--tpm backend.type=emulator,backend.version=2.0,model=tpm-crb)
   else
@@ -204,7 +210,10 @@ if ! confirm "Create this VM?"; then
 fi
 
 info "Creating VM '$NAME' ..."
-virt-install --connect qemu:///system "${ARGS[@]}"
+if ! virt-install --connect qemu:///system "${ARGS[@]}"; then
+  rm -rf "$VMDIR"
+  err "virt-install failed — VM '$NAME' was not created"
+fi
 
 info "VM '$NAME' created. Start it anytime with:"
 echo "    virsh start $NAME"

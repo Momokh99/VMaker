@@ -24,6 +24,8 @@ Item {
   property bool virshMissing: false
   property double lastUpdatedAt: 0
   property double lastRefreshAt: 0
+  property bool pendingRefresh: false
+  property double busySince: 0
 
   readonly property int totalCount: vms.length
 
@@ -79,12 +81,14 @@ Item {
   // ------------------------------------------------------------ refresh
 
   function refresh() {
-    if (root.busy) return
-    if (root.actionBusy) return
-    var now = Date.now()
-    if (now - root.lastRefreshAt < 500) return
-    root.lastRefreshAt = now
+    if (root.busy) { root.pendingRefresh = true; return }
+    if (root.actionBusy) { root.pendingRefresh = true; return }
+    // A queued refresh bypasses the debounce; it's an explicit user request.
+    if (!root.pendingRefresh && Date.now() - root.lastRefreshAt < 500) return
+    root.lastRefreshAt = Date.now()
+    root.pendingRefresh = false
     root.busy = true
+    root.busySince = Date.now()
     root.status = "loading"
     root.error = ""
     preflightProc.running = true
@@ -97,19 +101,43 @@ Item {
   function forceRefresh() {
     listWatchdog.stop()
     listStuckTimer.stop()
+    listStdoutFallback.stop()
     actionWatchdog.stop()
     actionStuckTimer.stop()
     viewerProbeWatchdog.stop()
     viewerPreflightWatchdog.stop()
+    // Only kill processes that are actually still running; a stale one can
+    // keep busy set forever.
+    if (preflightProc.running) preflightProc.running = false
+    if (listProc.running) listProc.running = false
+    if (actionProc.running) actionProc.running = false
+    if (viewerProbe.running) viewerProbe.running = false
+    if (viewerPreflight.running) viewerPreflight.running = false
+    if (viewerProc.running) viewerProc.running = false
     root.busy = false
+    root.busySince = 0
     root.actionKind = ""
     root.actionVm = ""
     root.actionError = ""
     root.status = "loading"
     root.error = ""
     root.lastRefreshAt = 0
+    root.pendingRefresh = false
     preflightProc.running = true
     preflightWatchdog.restart()
+  }
+
+  // Recover when preflightProc hangs: virsh can't be probed, so the refresh
+  // pipeline can't start. Kill the probe, clear busy, and mark an error so the
+  // panel stays usable instead of dead.
+  function recoverStuckPreflight() {
+    if (!root.busy) return
+    preflightProc.running = false
+    root.busy = false
+    root.busySince = 0
+    root.status = "error"
+    root.error = "virsh preflight timed out"
+    if (root.pendingRefresh) { root.pendingRefresh = false; root.refresh() }
   }
 
   // ------------------------------------------------------------ preflight
@@ -123,6 +151,8 @@ Item {
 
     onExited: function(code) {
       preflightWatchdog.stop()
+      // The watchdog may have already recovered (cleared busy); don't double-handle.
+      if (!root.busy) return
       if (code !== 0) {
         root.virshMissing = true
         root.busy = false
@@ -139,7 +169,7 @@ Item {
     id: preflightWatchdog
     interval: 5000
     repeat: false
-    onTriggered: preflightProc.running = false
+    onTriggered: root.recoverStuckPreflight()
   }
 
   function startList() {
@@ -152,6 +182,7 @@ Item {
     listProc.command = [Vms.VIRSH_BINARY, "-c", Vms.VIRSH_URI, "list", "--all"]
     listProc.running = true
     listWatchdog.restart()
+    listStdoutFallback.start()
   }
 
   // ------------------------------------------------------------ list process
@@ -202,13 +233,54 @@ Item {
     onTriggered: root.recoverStuckList()
   }
 
+  // Safety net: busy must never stay true when no process is actually running.
+  // If it does (e.g. a missed onExited / onStreamFinished), force-reset so the
+  // panel stays refreshable. Auto-retries once via pendingRefresh.
+  Timer {
+    id: busyWatchdog
+    interval: 1000
+    repeat: true
+    running: true
+    onTriggered: {
+      if (!root.busy) { root.busySince = 0; return }
+      if (root.busySince === 0) root.busySince = Date.now()
+      if (Date.now() - root.busySince > 12000 &&
+          !preflightProc.running && !listProc.running && !actionProc.running &&
+          !viewerProbe.running && !viewerPreflight.running && !viewerProc.running) {
+        root.busy = false
+        root.busySince = 0
+        root.status = "error"
+        root.error = "VM service refresh stuck — auto-reset"
+        root.pendingRefresh = true
+        root.refresh()
+      }
+    }
+  }
+
+  // Fallback: if virsh exits but its stdout never finishes, don't leave busy
+  // set forever. Finish with whatever output we have (possibly empty).
+  Timer {
+    id: listStdoutFallback
+    interval: 1000
+    repeat: false
+    onTriggered: {
+      if (root.busy && listProc.exitCode !== -1 && !listProc.stdoutDone) {
+        listProc.stdoutDone = true
+        root.finishList()
+      }
+    }
+  }
+
   function recoverStuckList() {
     if (!root.busy) return
     if (listProc.exitCode !== -1) return
     listWatchdog.stop()
+    listStdoutFallback.stop()
     root.busy = false
+    root.busySince = 0
     root.status = "error"
     root.error = "virsh timed out"
+    if (root.pendingRefresh) { root.pendingRefresh = false; root.refresh() }
   }
 
   function finishList() {
@@ -216,6 +288,7 @@ Item {
     if (listProc.exitCode === -1) return
     if (!listProc.stdoutDone) return
     listWatchdog.stop()
+    listStdoutFallback.stop()
     root.busy = false
     var output = String(listProc.stdoutText || "").trim()
     if (listProc.exitCode === 0) {
@@ -239,6 +312,7 @@ Item {
         ? "virsh returned no output"
         : Vms.describeListError(listProc.exitCode)
     }
+    if (root.pendingRefresh) { root.pendingRefresh = false; root.refresh() }
   }
 
   // ------------------------------------------------------------ action process

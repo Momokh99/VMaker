@@ -15,6 +15,29 @@ Panel {
 
   readonly property var service: bar && bar.shell ? bar.shell.serviceFor("vmaker.vms") : null
 
+  // If the service hasn't appeared after a grace period, show a retry path
+  // instead of a blank panel. Happens after shell restarts or plugin rescan.
+  property bool serviceMissing: false
+  readonly property bool servicePending: root.service === null
+
+  Timer {
+    id: serviceMissingTimer
+    interval: 3000
+    repeat: false
+    running: root.service === null
+    onTriggered: root.serviceMissing = true
+  }
+
+  // Retry loading the service by asking the shell to rescan plugins.
+  function retryService() {
+    rescanProcess.running = true
+  }
+
+  Process {
+    id: rescanProcess
+    command: ["bash", "-c", "omarchy-shell shell rescanPlugins"]
+  }
+
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color dim: Qt.darker(root.contentForeground, 1.4)
@@ -30,7 +53,7 @@ Panel {
     root.cursor = root.cursorCount - 1
 
   readonly property string statusLabel: {
-    if (!root.service) return "Loading"
+    if (!root.service) return root.serviceMissing ? "Service not loaded" : "Loading"
     if (root.service.status === "error") return "Unavailable"
     if (root.service.totalCount === 0) return "No VMs"
     return root.service.onCount + " of " + root.service.totalCount + " running"
@@ -224,6 +247,44 @@ Panel {
 
           PanelSeparator { foreground: root.contentForeground }
 
+          // Service not loaded: offer a retry path.
+          BorderSurface {
+            id: serviceMissingRow
+            visible: root.serviceMissing
+            width: parent.width
+            implicitHeight: Math.max(serviceMissingLabel.implicitHeight, Style.space(22)) + Style.space(6) * 2
+            radius: Style.cornerRadius
+            color: Style.hoverFillFor(root.contentForeground, root.warnColor)
+            borderSpec: Border.controlSpec("hover-cursor", root.contentForeground, root.warnColor)
+
+            Text {
+              id: serviceMissingLabel
+              textFormat: Text.PlainText
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(8)
+              anchors.right: serviceMissingRetry.left
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              text: "VM service not loaded"
+              color: root.warnColor
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              elide: Text.ElideRight
+            }
+
+            PanelActionButton {
+              id: serviceMissingRetry
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: "\u21BB"
+              tooltipText: "Rescan plugins and reload service"
+              foreground: root.contentForeground
+              hoverColor: root.warnColor
+              onClicked: root.retryService()
+            }
+          }
+
           // Refresh row (cursor 0).
           BorderSurface {
             id: refreshRow
@@ -244,6 +305,10 @@ Panel {
               cursorShape: Qt.PointingHandCursor
               onEntered: root.cursor = 0
               onClicked: if (root.service) root.service.refresh()
+              // Right-click: hard recovery when the service is wedged.
+              onPressed: function(mouse) {
+                if (mouse.button === Qt.RightButton && root.service) root.service.forceRefresh()
+              }
             }
 
             Text {
@@ -279,9 +344,9 @@ Panel {
               anchors.rightMargin: Style.space(6)
               anchors.verticalCenter: parent.verticalCenter
               iconText: "\u21BB"
-              tooltipText: "Re-read virsh"
+              tooltipText: root.service && root.service.busy ? "refresh queued" : "Re-read virsh"
               foreground: root.contentForeground
-              enabled: root.service ? !root.service.busy : false
+              enabled: root.service !== null
               onClicked: if (root.service) root.service.refresh()
             }
           }

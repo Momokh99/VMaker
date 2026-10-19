@@ -86,6 +86,7 @@ Panel {
 
     width: parent ? parent.width : 0
     implicitHeight: Math.max(nameText.implicitHeight, stateText.implicitHeight) + Style.space(6) * 2
+    height: implicitHeight
     radius: Style.cornerRadius
     color: row.hot ? Style.hoverFillFor(root.contentForeground, root.onColor) : "transparent"
     borderSpec: row.hot
@@ -119,8 +120,8 @@ Panel {
     Text {
       id: stateText
       textFormat: Text.PlainText
-      anchors.right: actionGroup.left
-      anchors.rightMargin: Style.space(8)
+      anchors.right: startBtn.left
+      anchors.rightMargin: Style.space(12)
       anchors.verticalCenter: parent.verticalCenter
       text: String(row.vm.state || "")
       color: root.stateColor(row.vm)
@@ -128,30 +129,32 @@ Panel {
       font.pixelSize: Style.font.bodySmall
     }
 
-    Row {
-      id: actionGroup
+    PanelActionButton {
+      id: forceBtn
+      visible: row.vm.on
       anchors.right: parent.right
       anchors.rightMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
-      spacing: Style.space(4)
+      iconText: "\u2715"
+      fontSize: Style.font.bodySmall
+      tooltipText: "Force stop " + row.vm.name
+      foreground: root.contentForeground
+      hoverColor: root.warnColor
+      enabled: root.service ? !root.service.actionBusy : false
+      onClicked: root.forceVm(row.vm)
+    }
 
-      PanelActionButton {
-        iconText: row.vm.on ? "\uF0425" : "\uF040A"
-        tooltipText: row.vm.on ? "Shut down " + row.vm.name : "Start " + row.vm.name
-        foreground: root.contentForeground
-        enabled: root.service ? !root.service.actionBusy : false
-        onClicked: root.activateVm(row.vm)
-      }
-
-      PanelActionButton {
-        visible: row.vm.on
-        iconText: "\uF0156"
-        tooltipText: "Force stop " + row.vm.name
-        foreground: root.contentForeground
-        hoverColor: root.warnColor
-        enabled: root.service ? !root.service.actionBusy : false
-        onClicked: root.forceVm(row.vm)
-      }
+    PanelActionButton {
+      id: startBtn
+      anchors.right: forceBtn.visible ? forceBtn.left : parent.right
+      anchors.rightMargin: forceBtn.visible ? Style.space(4) : Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: row.vm.on ? "\u25A0" : "\u25B6"
+      fontSize: Style.font.bodySmall
+      tooltipText: row.vm.on ? "Shut down " + row.vm.name : "Start " + row.vm.name
+      foreground: root.contentForeground
+      enabled: root.service ? !root.service.actionBusy : false
+      onClicked: root.activateVm(row.vm)
     }
   }
 
@@ -226,6 +229,7 @@ Panel {
             id: refreshRow
             width: parent.width
             implicitHeight: Math.max(refreshLabel.implicitHeight, Style.space(22)) + Style.space(6) * 2
+            height: implicitHeight
             radius: Style.cornerRadius
             readonly property bool hot: refreshMouse.containsMouse || root.cursor === 0
             color: hot ? Style.hoverFillFor(root.contentForeground, root.onColor) : "transparent"
@@ -274,7 +278,7 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.space(6)
               anchors.verticalCenter: parent.verticalCenter
-              iconText: "\uF0450"
+              iconText: "\u21BB"
               tooltipText: "Re-read virsh"
               foreground: root.contentForeground
               enabled: root.service ? !root.service.busy : false

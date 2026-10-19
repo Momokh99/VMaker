@@ -23,6 +23,7 @@ Item {
   property bool busy: false
   property bool virshMissing: false
   property double lastUpdatedAt: 0
+  property double lastRefreshAt: 0
 
   readonly property int totalCount: vms.length
 
@@ -60,6 +61,7 @@ Item {
 
   function runAction(kind, name) {
     if (root.actionBusy) return false
+    if (root.busy) return false
     if (kind !== "start" && kind !== "shutdown" && kind !== "destroy") return false
     root.actionKind = kind
     root.actionVm = String(name)
@@ -77,6 +79,10 @@ Item {
 
   function refresh() {
     if (root.busy) return
+    if (root.actionBusy) return
+    var now = Date.now()
+    if (now - root.lastRefreshAt < 500) return
+    root.lastRefreshAt = now
     root.busy = true
     root.status = "loading"
     root.error = ""
@@ -165,14 +171,27 @@ Item {
     if (!listProc.stdoutDone) return
     listWatchdog.stop()
     root.busy = false
+    var output = String(listProc.stdoutText || "").trim()
     if (listProc.exitCode === 0) {
-      root.vms = Vms.parseList(listProc.stdoutText)
-      root.status = "ok"
-      root.error = ""
-      root.lastUpdatedAt = Date.now()
+      var parsed = Vms.parseList(output)
+      // Only trust an empty result if the output looks like valid virsh output
+      // (contains the header). Otherwise keep the last known-good list so a
+      // flaky post-action virsh run can't wipe all VMs from the panel.
+      if (parsed.length > 0 || output.indexOf("Id") !== -1) {
+        root.vms = parsed
+        root.status = "ok"
+        root.error = ""
+        root.lastUpdatedAt = Date.now()
+      } else {
+        root.status = "error"
+        root.error = "virsh returned unexpected output"
+      }
     } else {
+      // Keep the last known-good list instead of wiping it on flaky output.
       root.status = "error"
-      root.error = Vms.describeListError(listProc.exitCode)
+      root.error = listProc.exitCode === 0
+        ? "virsh returned no output"
+        : Vms.describeListError(listProc.exitCode)
     }
   }
 

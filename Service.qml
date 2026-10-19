@@ -145,7 +145,8 @@ Item {
     onRunningChanged: {
       if (running) return
       if (!root.busy) return
-      Qt.callLater(root.recoverStuckList)
+      if (listProc.exitCode !== -1) return
+      listStuckTimer.restart()
     }
   }
 
@@ -154,6 +155,16 @@ Item {
     interval: Vms.LIST_TIMEOUT_MS
     repeat: false
     onTriggered: listProc.running = false
+  }
+
+  // Guards against the onRunningChanged / onExited ordering race: if the
+  // process exits right as onRunningChanged fires, Qt.callLater could run
+  // recoverStuckList after finishList already handled completion.
+  Timer {
+    id: listStuckTimer
+    interval: 50
+    repeat: false
+    onTriggered: root.recoverStuckList()
   }
 
   function recoverStuckList() {
@@ -271,6 +282,7 @@ Item {
     viewerProbe.vm = String(name)
     viewerProbe.command = [Vms.VIRSH_BINARY, "-c", Vms.VIRSH_URI, "domdisplay", String(name)]
     viewerProbe.running = true
+    viewerProbeWatchdog.restart()
   }
 
   // Ask libvirt which display a running domain exposes (spice://..., vnc://...).
@@ -298,7 +310,42 @@ Item {
     }
   }
 
+  Timer {
+    id: viewerProbeWatchdog
+    interval: Vms.LIST_TIMEOUT_MS
+    repeat: false
+    onTriggered: viewerProbe.running = false
+  }
+
+  Process {
+    id: viewerPreflight
+    property string vm: ""
+    command: []
+
+    onExited: function(code) {
+      viewerPreflightWatchdog.stop()
+      var name = viewerPreflight.vm
+      viewerPreflight.vm = ""
+      if (code !== 0 || name === "") return
+      viewerProc.command = [Vms.VIRT_VIEWER_BINARY, "-c", Vms.VIRSH_URI, name]
+      viewerProc.running = true
+    }
+  }
+
+  Timer {
+    id: viewerPreflightWatchdog
+    interval: Vms.LIST_TIMEOUT_MS
+    repeat: false
+    onTriggered: viewerPreflight.running = false
+  }
+
+  Process {
+    id: viewerProc
+    command: []
+  }
+
   function finishViewerProbe() {
+    viewerProbeWatchdog.stop()
     if (viewerProbe.exitCode === -1) return
     if (!viewerProbe.stdoutDone) return
     var display = viewerProbe.stdoutText
@@ -308,6 +355,7 @@ Item {
     viewerPreflight.vm = name
     viewerPreflight.command = ["/usr/bin/test", "-x", Vms.VIRT_VIEWER_BINARY]
     viewerPreflight.running = true
+    viewerPreflightWatchdog.restart()
   }
 
   Process {

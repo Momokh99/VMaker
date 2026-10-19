@@ -44,6 +44,13 @@ command -v virt-install >/dev/null 2>&1 || err "virt-install not found — insta
 command -v osinfo-query >/dev/null 2>&1 || err "osinfo-query not found — install libosinfo"
 command -v qemu-system-x86_64 >/dev/null 2>&1 || err "qemu-system-x86_64 not found — install qemu"
 
+# Probe for spice graphics support; fall back to vnc if unavailable.
+GRAPHICS="spice"
+if ! qemu-system-x86_64 -display help 2>/dev/null | grep -qw spice; then
+  GRAPHICS="vnc"
+  info "spice graphics not available — using vnc"
+fi
+
 if ! virsh -c qemu:///system connect >/dev/null 2>&1; then
   err "can't connect to libvirt (qemu:///system). Have you logged out/in since being added to the 'libvirt' group?"
 fi
@@ -118,8 +125,12 @@ while true; do
   ISO="$(ask_str "Path to ISO (or drag file here)" "")"
   ISO="${ISO/#\~/$HOME}"
   ISO="$(printf '%s' "$ISO" | sed "s/^['\"]//;s/['\"]$//")"
-  [ -f "$ISO" ] && break
-  echo "  (not found: $ISO)" >&2
+  [ -f "$ISO" ] || { echo "  (not found: $ISO)" >&2; continue; }
+  MIME="$(file --mime-type -b "$ISO" 2>/dev/null || true)"
+  case "$MIME" in
+    application/x-iso9660-image|application/octet-stream) break ;;
+    *) echo "  (not an ISO file: $MIME — $ISO)" >&2 ;;
+  esac
 done
 
 # 4. CPU cores
@@ -165,7 +176,7 @@ ARGS=(
   --disk "path=$DISK,format=qcow2,bus=$DISK_BUS,size=$DISK_GB"
   --cdrom "$ISO"
   --network "network=default,model=$NET_MODEL"
-  --graphics spice
+  --graphics "$GRAPHICS"
   --video "$VIDEO"
 )
 

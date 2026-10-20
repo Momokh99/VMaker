@@ -142,6 +142,11 @@ DEF_NAME="$(printf '%s' "$OS_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9'
 NAME="$(ask_str "Step 2: VM name" "${DEF_NAME:-vm}")"
 NAME="$(printf '%s' "$NAME" | tr -c 'a-zA-Z0-9._-' '-' | sed 's/-\+/-/g;s/^-//;s/-$//')"
 [ -n "$NAME" ] || err "VM name can't be empty"
+# The sanitizer above maps most junk to '-', but it leaves dots alone. Reject a
+# name that starts with '.', especially '.' and '..', which would make $VMDIR
+# escape $VMROOT and point rm -rf at a parent directory.
+[[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+  || err "VM name must start with a letter or digit and may only contain letters, digits, '.', '_' or '-'"
 virsh -c qemu:///system dominfo "$NAME" >/dev/null 2>&1 && err "a VM named '$NAME' already exists"
 
 # 3. ISO
@@ -180,7 +185,12 @@ DISK_GB="$(ask_int "Step 6: disk size in GB" "20" 1 "")"
 # ---------- build VM config ----------
 VMDIR="$VMROOT/$NAME"
 DISK="$VMDIR/$NAME.qcow2"
-mkdir -p "$VMDIR"
+# Never touch a directory we did not create in this run: `virsh undefine`
+# keeps disks by default, and the cleanup path below removes $VMDIR when
+# virt-install fails.
+if [ -e "$VMDIR" ]; then
+  err "refusing to reuse existing path $VMDIR — move it aside or choose another VM name"
+fi
 
 if [ "$OS_TYPE" = "windows" ]; then
   DISK_BUS="sata"
@@ -247,18 +257,19 @@ if ! confirm "Create this VM?"; then
 fi
 
 info "Creating VM '$NAME' ..."
+mkdir -p "$VMDIR"
 if ! virt-install --connect qemu:///system "${ARGS[@]}"; then
   rm -rf "$VMDIR"
   err "virt-install failed — VM '$NAME' was not created"
 fi
 
 info "VM '$NAME' created. Start it anytime with:"
-echo "    virsh start $NAME"
-echo "    virsh shutdown $NAME   (graceful)"
-echo "    virsh destroy $NAME    (force)"
+echo "    virsh -c qemu:///system start $NAME"
+echo "    virsh -c qemu:///system shutdown $NAME   (graceful)"
+echo "    virsh -c qemu:///system destroy $NAME    (force)"
 echo ""
 echo "To install the OS now, open virt-manager (double-click the VM) or run:"
-echo "    virt-viewer $NAME"
+echo "    virt-viewer -c qemu:///system $NAME"
 if [ "$OS_TYPE" = "windows" ]; then
   echo ""
   echo "Windows note: after install, install the virtio-win guest tools for best"

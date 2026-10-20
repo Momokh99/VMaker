@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# virt-install is a Python program whose shebang is `#!/usr/bin/env python3`.
+# A version manager on PATH (mise, pyenv, ...) can shadow /usr/bin/python3 with
+# a build that lacks python-gobject (gi), which makes virt-install fail with
+# ModuleNotFoundError. Force the system interpreter/binaries to take precedence
+# so the tools we depend on run under the Python they were built against.
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"
+
+# Fail fast with a clear message instead of a Python traceback if gi is missing.
+if ! /usr/bin/python3 -c 'import gi' >/dev/null 2>&1; then
+  echo "error: python-gobject (gi) is not importable by /usr/bin/python3 - install the 'python-gobject' package" >&2
+  exit 1
+fi
+
 # vmaker - interactive VM creation helper for QEMU/KVM + libvirt
 # VMs are stored under ~/Myvms/<name>/
 
@@ -53,6 +66,19 @@ fi
 
 if ! virsh -c qemu:///system connect >/dev/null 2>&1; then
   err "can't connect to libvirt (qemu:///system). Have you logged out/in since being added to the 'libvirt' group?"
+fi
+
+# vmaker always attaches VMs to the 'default' NAT network. If the network driver
+# (virtnetworkd on modular installs, libvirtd on legacy ones) is not running,
+# virt-install happily creates a VM that can never boot. Fail before asking
+# questions so the problem and its fix are obvious.
+# Capture first: `virsh | grep -q` can trip `pipefail` when grep exits early.
+DEFAULT_NET_INFO="$(virsh -c qemu:///system net-info default 2>/dev/null || true)"
+if ! grep -q 'Active:.*yes' <<<"$DEFAULT_NET_INFO"; then
+  err "the libvirt 'default' network is not active, so the new VM could not boot.
+  Start it with:
+    sudo systemctl enable --now virtnetworkd.socket
+    sudo virsh -c qemu:///system net-start default"
 fi
 
 # ---------- curated OS lists ----------
